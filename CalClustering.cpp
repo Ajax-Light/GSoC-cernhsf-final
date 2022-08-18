@@ -25,7 +25,7 @@
 // Custom Headers
 #include "AlgoHeaders.h"
 
-void processEvent(podio::EventStore& store, int eventNum, struct props& p, eicd::ProtoClusterCollection& proto) {
+void processEvent(podio::EventStore& store, int eventNum, struct props& p) {
     auto& recoPC = store.get<eicd::CalorimeterHitCollection>("EcalEndcapNHitsReco");
     
     // Call Calo Algos
@@ -34,16 +34,7 @@ void processEvent(podio::EventStore& store, int eventNum, struct props& p, eicd:
 
     if(recoPC.isValid()){
         std::cout << "Event: " << eventNum << " ,EcalEndcapNHitsReco , size: " << recoPC.size() << "\n";
-        cis.execute(proto);
-        /* if(proto.isValid()){
-            for(auto i : proto){
-                for(auto it = i.hits_begin(); it != i.hits_end(); it++){
-                    std::cout << *it << "\n";
-                }
-            }
-        }else {
-            std::cout << "Size 0, skipping\n";
-        } */
+        cis.execute();
     } else {
         throw std::runtime_error("Collection 'EcalEndcapNHitsReco' should be present");
     }
@@ -84,9 +75,11 @@ int main(int argc, char** argv) {
     auto store = podio::EventStore();
     store.setReader(&reader);
 
+	/*
     auto writer = podio::ROOTWriter("test_clusterop.root", &store);
     auto& proto = store.create<eicd::ProtoClusterCollection>("EcalEndcapNProtoClusters");
     writer.registerForWrite("EcalEndcapNProtoClusters");
+	*/
 
     const auto nEvents = reader.getEntries();
 
@@ -97,9 +90,9 @@ int main(int argc, char** argv) {
         }
 
         // Process Event
-        processEvent(store, i, p, proto);
+        processEvent(store, i, p);
 
-        writer.writeEvent();
+        //writer.writeEvent();
     
         store.clear();
         reader.endOfEvent();

@@ -195,11 +195,12 @@ namespace Jug::Reco {
     return 0;
   }
 
-  void CalorimeterIslandCluster::execute(eicd::ProtoClusterCollection& proto) {
+  ProtoClusterCollection CalorimeterIslandCluster::execute() {
     // input collections
     const auto& hits = m_inputHitCollection;
     // Create output collections
     //auto& proto = m_outputProtoCollection.createAndPut();
+	ProtoClusterCollection proto;
 
     // group neighboring hits
     std::vector<std::vector<std::pair<uint32_t, CaloHit>>> groups;

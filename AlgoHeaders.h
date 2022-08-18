@@ -328,7 +328,7 @@ public:
 
   int initialize();
 
-  void execute(eicd::ProtoClusterCollection&);
+  eicd::ProtoClusterCollection execute();
 
 private:
   bool is_neighbour(const eicd::CalorimeterHit&, const eicd::CalorimeterHit&) const;
