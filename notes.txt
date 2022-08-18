@@ -1,0 +1,15 @@
+1) source thisroot.sh to set ROOT env variables = $ROOTSYS
+2) source podio env.sh to set LD_LIBRARY_PATH, $PODIO is already set with container
+3) No env.sh file to set-up edm4hep, do it manually:
+    export $EDM4HEP=/opt/software/linux-debian11-x86_64/gcc-10.2.1/edm4hep-0.4.1-mcukdap7vloffzfhkfy6ya7kcdfap6zk/
+    export $LD_LIBRARY_PATH=$EDM4HEP/lib:$LD_LIBRARY_PATH
+
+If you haven't figured it out already, the libs are in $ROOT|$PODIO|$EDM4HEP/lib, not sure if linking with -l
+is better than $LD_LIBRARY_PATH exports.
+UPDATE:: $LD_LIBRARY_PATH takes care of all lib dependencies, only need to link -lpodioRootIO and -leicd
+
+Looks like there's an issue with dependencies of ROOT's libCore.so, use -Wl,--copy-dt-needed-entries to enable
+recursive search of symbols in dependencies.
+
+Line 109: Maybe use unordered_map instead of map?
+dfs_group: Use iterative DFS instead of recursive DFS to prevent call stack abuse?
