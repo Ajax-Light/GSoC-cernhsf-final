@@ -235,7 +235,7 @@ namespace Jug::Reco {
                 << "local maxima: " << maxima.size() << endmsg;
       }
     }
-
+    return proto;
   }
 
   // helper function to group hits
