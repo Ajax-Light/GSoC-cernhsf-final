@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <functional>
 #include <tuple>
+#include <stack>
 
 #include "fmt/format.h"
 
@@ -254,19 +255,32 @@ namespace Jug::Reco {
   // grouping function with Depth-First Search
   void CalorimeterIslandCluster::dfs_group(std::vector<std::pair<uint32_t, CaloHit>>& group, int idx,
                  const CaloHitCollection& hits, std::vector<bool>& visits) const {
-    // not a qualified hit to particpate clustering, stop here
-    if (hits[idx].getEnergy() < minClusterHitEdep) {
-      visits[idx] = true;
-      return;
-    }
+    std::stack <int> s;
+    s.push(idx);
 
-    group.emplace_back(idx, hits[idx]);
-    visits[idx] = true;
-    for (size_t i = 0; i < hits.size(); ++i) {
-      if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
+    while(!s.empty()){
+      idx = s.top();
+      s.pop();
+
+      // Already Visited
+      if(visits[idx]){
         continue;
       }
-      dfs_group(group, i, hits, visits);
+      // not a qualified hit to particpate clustering, stop here
+      if (hits[idx].getEnergy() < minClusterHitEdep) {
+        visits[idx] = true;
+        continue;
+      }
+
+      group.emplace_back(idx, hits[idx]);
+      visits[idx] = true;
+      for (size_t i = 0; i < hits.size(); ++i) {
+        if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
+          continue;
+        }
+        
+        s.push(i);
+      }
     }
   }
 
@@ -332,7 +346,7 @@ namespace Jug::Reco {
   }
 
   // split a group of hits according to the local maxima
-  void CalorimeterIslandCluster::split_group(std::vector<std::pair<uint32_t, CaloHit>>& group, const std::vector<CaloHit>& maxima,
+  void CalorimeterIslandCluster::split_group(const std::vector<std::pair<uint32_t, CaloHit>>& group, const std::vector<CaloHit>& maxima,
                    ProtoClusterCollection& proto) const {
     // special cases
     if (maxima.empty()) {

@@ -341,7 +341,7 @@ private:
 
   inline static void vec_normalize(std::vector<double>&);
 
-  void split_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, const std::vector<eicd::CalorimeterHit>&,
+  void split_group(const std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, const std::vector<eicd::CalorimeterHit>&,
                    eicd::ProtoClusterCollection&) const;
 
 }; // class
