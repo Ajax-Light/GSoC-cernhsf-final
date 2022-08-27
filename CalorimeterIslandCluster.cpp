@@ -14,25 +14,13 @@
 #include <algorithm>
 #include <functional>
 #include <tuple>
+#include <stack>
 
 #include "fmt/format.h"
-
-
-#include "Gaudi/Property.h"
-#include "GaudiAlg/GaudiAlgorithm.h"
-#include "GaudiAlg/GaudiTool.h"
-#include "GaudiAlg/Transformer.h"
-#include "GaudiKernel/PhysicalConstants.h"
-#include "GaudiKernel/RndmGenerators.h"
-#include "GaudiKernel/ToolHandle.h"
-
 
 #include "DDRec/CellIDPositionConverter.h"
 #include "DDRec/Surface.h"
 #include "DDRec/SurfaceManager.h"
-
-//#include "JugBase/DataHandle.h"
-//#include "JugBase/IGeoSvc.h"
 
 // Event Model related classes
 #include "eicd/CalorimeterHitCollection.h"
@@ -45,10 +33,7 @@
 // Custom Headers
 #include "AlgoHeaders.h"
 
-#ifdef SYCL_PRESENT
-  #include <CL/sycl.hpp>
-#endif
-
+#include <CL/sycl.hpp>
 
 using namespace my_units;
 
@@ -114,6 +99,20 @@ static std::map<std::string,
         {"globalDistRPhi", {globalDistRPhi, {mm, rad}}}, {"globalDistEtaPhi", {globalDistEtaPhi, {1., rad}}},
     };
 
+
+struct async_err_handler {
+  void operator()(sycl::exception_list elist){
+    for(auto e : elist){
+      std::rethrow_exception(e);
+    }
+  }
+};
+
+
+// SYCL Initializations
+sycl::default_selector device_selector;
+sycl::queue queue(device_selector, async_err_handler{});
+
 } // namespace
 
 namespace Jug::Reco {
@@ -132,65 +131,17 @@ namespace Jug::Reco {
  */
 
   int CalorimeterIslandCluster::initialize() {
-    /*
-    if (GaudiAlgorithm::initialize().isFailure()) {
-      return StatusCode::FAILURE;
-    }
-    */
 
     // unitless conversion, keep consistency with juggler internal units (GeV, mm, ns, rad)
     minClusterHitEdep    = p.m_minClusterHitEdep / GeV;
     minClusterCenterEdep = p.m_minClusterCenterEdep / GeV;
     sectorDist           = p.m_sectorDist / mm;
-    /*
-    // set coordinate system
-    auto set_dist_method = [this](const std::vector<double>& uprop) {
-      if (uprop.size() == 0) {
-        return false;
-      }
-      auto& [method, units] = distMethods[uprop.name()];
-      if (uprop.size() != units.size()) {
-        std::cout << units.size() << std::endl;
-        std::cout << fmt::format("Expect {} values from {}, received {}: ({}), ignored it.", units.size(), uprop.name(),
-                                 uprop.size(), fmt::join(uprop.value(), ", "))
-                  << std::endl;
-        return false;
-      } else {
-        for (size_t i = 0; i < units.size(); ++i) {
-          neighbourDist[i] = uprop.value()[i] / units[i];
-        }
-        hitsDist = method;
-        std::cout << fmt::format("Clustering uses {} with distances <= [{}]", uprop.name(), fmt::join(neighbourDist, ","))
-               << std::endl;
-      }
-      return true;
-    };
-
-    
-    std::vector<std::vector<double>> uprops{
-        u_localDistXY,
-        u_localDistXZ,
-        u_localDistYZ,
-        u_globalDistRPhi,
-        u_globalDistEtaPhi,
-        // default one should be the last one
-        u_dimScaledLocalDistXY,
-    };
-    
-
-    bool method_found = false;
-    for (auto& uprop : uprops) {
-      if (set_dist_method(uprop)) {
-        method_found = true;
-        break;
-      }
-    }
-    if (not method_found) {
-      error() << "Cannot determine the clustering coordinates" << endmsg;
-      return 1;
-    }*/
 
     hitsDist = localDistXY;
+
+/*     std::cout << "Running on "
+              << queue.get_device().get_info<cl::sycl::info::device::name>()
+              << "\n"; */
 
     return 0;
   }
@@ -200,7 +151,7 @@ namespace Jug::Reco {
     const auto& hits = m_inputHitCollection;
     // Create output collections
     //auto& proto = m_outputProtoCollection.createAndPut();
-	ProtoClusterCollection proto;
+    ProtoClusterCollection proto;
 
     // group neighboring hits
     std::vector<std::vector<std::pair<uint32_t, CaloHit>>> groups;
@@ -235,6 +186,8 @@ namespace Jug::Reco {
                 << "local maxima: " << maxima.size() << endmsg;
       }
     }
+
+    std::cout << "Total Number of groups for this event: " << groups.size() << "\n";
     return proto;
   }
 
@@ -254,20 +207,43 @@ namespace Jug::Reco {
   // grouping function with Depth-First Search
   void CalorimeterIslandCluster::dfs_group(std::vector<std::pair<uint32_t, CaloHit>>& group, int idx,
                  const CaloHitCollection& hits, std::vector<bool>& visits) const {
-    // not a qualified hit to particpate clustering, stop here
-    if (hits[idx].getEnergy() < minClusterHitEdep) {
-      visits[idx] = true;
-      return;
-    }
 
-    group.emplace_back(idx, hits[idx]);
-    visits[idx] = true;
-    for (size_t i = 0; i < hits.size(); ++i) {
-      if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
+    /*queue.submit([&](sycl::handler cgh){
+      // Local accessor doesn't require buffer, local work group memory
+      sycl::accessor<bool, 1, sycl::access::mode::read_write, sycl::access::target::local> visits;
+      sycl::accessor<std::stack<int>, 0, sycl::access::mode::read_write, sycl::access::target::local> tstack;
+    });*/
+
+    std::stack <int> s;
+    s.push(idx);
+
+    while(!s.empty()){
+      idx = s.top();
+      s.pop();
+
+      // Already Visited
+      if(visits[idx]){
         continue;
       }
-      dfs_group(group, i, hits, visits);
+      // not a qualified hit to particpate clustering, stop here
+      if (hits[idx].getEnergy() < minClusterHitEdep) {
+        visits[idx] = true;
+        continue;
+      }
+
+      group.emplace_back(idx, hits[idx]);
+      visits[idx] = true;
+      for (size_t i = 0; i < hits.size(); ++i) {
+        if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
+          continue;
+        }
+        
+        s.push(i);
+      }
     }
+
+    //queue.wait_and_throw(); // Wait for completion before moving on to splits & throw async errors
+
   }
 
   // find local maxima that above a certain threshold
@@ -322,17 +298,49 @@ namespace Jug::Reco {
 
   // helper function
   inline void CalorimeterIslandCluster::vec_normalize(std::vector<double>& vals) {
-    double total = 0.;
-    for (auto& val : vals) {
-      total += val;
-    }
-    for (auto& val : vals) {
-      val /= total;
-    }
+    double total = 0.0;
+{
+  try{
+    sycl::buffer<double, 1> val_buf {vals.data(), sycl::range<1>(vals.size())};
+    sycl::buffer<double, 1> sum_buf {&total, sycl::range<1>(1)};
+
+    queue.submit([&](sycl::handler& h){
+      sycl::accessor val_acc = val_buf.get_access<sycl::access::mode::read>(h);
+      sycl::accessor sum_acc = sum_buf.get_access<sycl::access::mode::read_write>(h);
+
+      h.parallel_for(sycl::range<1>(vals.size()), [=](sycl::id<1> idx){
+        sum_acc[0] += val_acc[idx];
+      });
+      
+    });
+
+    queue.submit([&](sycl::handler& h){
+    sycl::accessor val_acc = val_buf.get_access<sycl::access::mode::read_write>(h);
+    sycl::accessor sum_acc = sum_buf.get_access<sycl::access::mode::read>(h);
+    
+    h.parallel_for(sycl::range<1>(vals.size()), [=](sycl::id<1> idx){
+      val_acc[idx] /= sum_acc[0];
+    });
+
+    });
+    
+  }catch(std::exception e){
+    std::cerr << "Caught SYCL Exception: " << e.what() << "\n";
+  }
+} // sync memory
+
+/*   // DEBUG
+  std::cout << "Total: " << total << "\n";
+  for(auto i : vals){
+    std::cout << "Vals: " << i << " ";
+  }
+  std::cout << "\n";
+  // DEBUG */
+
   }
 
   // split a group of hits according to the local maxima
-  void CalorimeterIslandCluster::split_group(std::vector<std::pair<uint32_t, CaloHit>>& group, const std::vector<CaloHit>& maxima,
+  void CalorimeterIslandCluster::split_group(const std::vector<std::pair<uint32_t, CaloHit>>& group, const std::vector<CaloHit>& maxima,
                    ProtoClusterCollection& proto) const {
     // special cases
     if (maxima.empty()) {
@@ -404,6 +412,5 @@ namespace Jug::Reco {
   }
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-//DECLARE_COMPONENT(CalorimeterIslandCluster)
 
 } // namespace Jug::Reco
