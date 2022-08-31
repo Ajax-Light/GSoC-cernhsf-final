@@ -8,7 +8,7 @@
 #define info() std::cout
 #define verbose() std::cout
 #define error() std::cerr
-#define endmsg std::endl
+#define endmsg "\n"
 
 namespace my_units {
 // Make units similar to Gaudi::Units
@@ -333,6 +333,13 @@ public:
 private:
   bool is_neighbour(const eicd::CalorimeterHit&, const eicd::CalorimeterHit&) const;
 
+  std::vector<int> get_neighbours(const eicd::CalorimeterHitCollection&, int idx) const;
+
+  inline int representative(const int idx, const std::vector<int>& __restrict__);
+
+  void parallel_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&,const eicd::CalorimeterHitCollection&)
+                 const;
+
   void dfs_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, int, const eicd::CalorimeterHitCollection&,
                  std::vector<bool>&) const;
 
@@ -341,7 +348,7 @@ private:
 
   inline static void vec_normalize(std::vector<double>&);
 
-  void split_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, const std::vector<eicd::CalorimeterHit>&,
+  void split_group(const std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, const std::vector<eicd::CalorimeterHit>&,
                    eicd::ProtoClusterCollection&) const;
 
 }; // class
