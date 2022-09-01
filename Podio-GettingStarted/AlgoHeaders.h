@@ -333,9 +333,7 @@ public:
 private:
   bool is_neighbour(const eicd::CalorimeterHit&, const eicd::CalorimeterHit&) const;
 
-  std::vector<std::vector<unsigned int>> get_neighbours(const eicd::CalorimeterHitCollection&) const;
-
-  inline int representative(const int idx, const std::vector<int>& __restrict__);
+  std::vector<int> get_neighbours(const eicd::CalorimeterHitCollection&, int idx) const;
 
   void parallel_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&,const eicd::CalorimeterHitCollection&)
                  const;

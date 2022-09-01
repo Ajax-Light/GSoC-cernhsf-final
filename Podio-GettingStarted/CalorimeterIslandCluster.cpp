@@ -35,8 +35,6 @@
 
 #include <CL/sycl.hpp>
 
-// __restrict__ prevents pointer aliasing
-SYCL_EXTERNAL inline int representative(const int idx, const std::vector<int>& __restrict__ nstat);
 
 using namespace my_units;
 
@@ -210,41 +208,60 @@ namespace Jug::Reco {
     }
   }
 
-  // Convert Hits to Adjacency List
-  std::vector<std::vector<unsigned int>> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits) const{
-    std::vector<std::vector<unsigned int> > adj (hits.size());
-    
-    for(size_t i = 0; i < hits.size(); i++){
-      unsigned int cur_hit = hits[i].id();
-      for(size_t j = 0; j < hits.size(); j++){
-        if(i != j && is_neighbour(hits[i], hits[j])){
-          unsigned int n_hit = hits[j].id();
-          adj[cur_hit].push_back(n_hit);
-        }
+  // Get Neighbour hit indices
+  std::vector<int> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits, int idx) const{
+    std::vector<int> nlist;
+    std::cout << "Index: " << idx << " Neighbours: ";
+    for(int i = 0; i < (int) hits.size(); i++){
+      if(i != idx && is_neighbour(hits[idx], hits[i])){
+        std::cout << i << " ";
+        nlist.push_back(i);
       }
     }
-    
-    return adj;
+    std::cout << "\n";
+    return nlist;
   }
 
-  inline int representative(const int idx, const std::vector<int>& __restrict__ nstat){
-    return 0;
+  // Find representative / root node of a component with Intermediate-Pointer Jumping (Path Compression)
+  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::read_write> dsu) {
+    int par = dsu[idx];
+    if(par != idx){
+      int next, prev = idx;
+      while(par > (next = dsu[par])){
+        dsu[prev] = next;   // Intermediate Path Compression / pointer jumping
+        prev = par;
+        par = next;
+      }
+    }
+    return par;
   }
 
-  // parallel grouping algorithm
+  // Parallel Grouping Algorithm (ECL-CC)
   void CalorimeterIslandCluster::parallel_group(std::vector<std::pair<uint32_t, CaloHit>>& group,
                 const CaloHitCollection& hits) const {
     
     // Host memory
+    //
+    // Disjoint-Set Union or Union-Find Structure
     std::vector<int> dsu(hits.size());
 
-    // Convert Hits data to Adjacency List for SYCL computation
-    std::vector<std::vector<unsigned int>> adj = get_neighbours(hits);
+    // Convert Hits data to CSR Format for Device Offload
+    std::vector<int> nidx {0}, nlist;
+    for(size_t i = 0; i < hits.size(); i++){
+      auto neigh = get_neighbours(hits, i);
+      nidx.push_back((int)neigh.size());
+      for(int t : neigh){
+        nlist.push_back(t);
+      }
+    }
 
     {
       // Device memory
-      sycl::buffer<int, 1> dsu_buf(dsu);
+      sycl::buffer<int, 1> dsu_buf (dsu.data(), sycl::range<1>(dsu.size()));
+      sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
+      sycl::buffer<int, 1> nlist_buf (nlist.data(), sycl::range<1>(nlist.size()));
       
+
       try{
             // Initalize DSU Structure
             queue.submit([&](sycl::handler& h){
@@ -257,10 +274,15 @@ namespace Jug::Reco {
             // Hooking (Union)
             queue.submit([&](sycl::handler& h){
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::read_write>(h);
+              auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
+              auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
+              sycl::stream dbg (1024,1024,h);
               h.parallel_for(sycl::range<1>(hits.size()), [=](sycl::id<1> idx){
-
-
-
+                int vstat = representative(idx, dsu_acc);
+                const int begin = nidx_acc[idx];
+                const int end = nidx_acc[idx+1];
+                const int deg = end - begin;    // Standard CSR Format
+                
               });
             });
       }catch(std::exception e){
