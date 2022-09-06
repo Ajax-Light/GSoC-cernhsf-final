@@ -319,7 +319,7 @@ private:
 
   // unitless counterparts of the input parameters
   double minClusterHitEdep{0}, minClusterCenterEdep{0}, sectorDist{0};
-  std::array<double, 2> neighbourDist = {0., 0.};
+  std::array<double, 2> neighbourDist = {0.,0.};
 
 public:
 
@@ -335,9 +335,7 @@ private:
 
   std::vector<int> get_neighbours(const eicd::CalorimeterHitCollection&, int idx) const;
 
-  inline int representative(const int idx, const std::vector<int>& __restrict__);
-
-  void parallel_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&,const eicd::CalorimeterHitCollection&)
+  void parallel_group(std::vector<std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>>&,const eicd::CalorimeterHitCollection&)
                  const;
 
   void dfs_group(std::vector<std::pair<uint32_t, eicd::CalorimeterHit>>&, int, const eicd::CalorimeterHitCollection&,

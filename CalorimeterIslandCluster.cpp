@@ -35,8 +35,6 @@
 
 #include <CL/sycl.hpp>
 
-// __restrict__ prevents pointer aliasing
-SYCL_EXTERNAL inline int representative(const int idx, const std::vector<int>& __restrict__ nstat);
 
 using namespace my_units;
 
@@ -152,8 +150,8 @@ namespace Jug::Reco {
   ProtoClusterCollection CalorimeterIslandCluster::execute() {
     // input collections
     const auto& hits = m_inputHitCollection;
+
     // Create output collections
-    //auto& proto = m_outputProtoCollection.createAndPut();
     ProtoClusterCollection proto;
 
     // group neighboring hits
@@ -178,12 +176,14 @@ namespace Jug::Reco {
       dfs_group(groups.back(), i, hits, visits);
     }  */
 
-    groups.emplace_back();
-    parallel_group(groups.back(), hits);
+    parallel_group(groups, hits);
 
     for (auto& group : groups) {
       if (group.empty()) {
         continue;
+      }
+      for(auto p : group){
+        std::cout << "Group: " << p.first << " Hit: " << p.second.id() << "\n";
       }
       auto maxima = find_maxima(group, !m_splitCluster);
       split_group(group, maxima, proto);
@@ -214,8 +214,11 @@ namespace Jug::Reco {
   std::vector<int> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits, int idx) const{
     std::vector<int> nlist;
     std::cout << "Index: " << idx << " Neighbours: ";
-    for(int i = 0; i < (int) hits.size(); i++){
-      if(i != idx && is_neighbour(hits[idx], hits[i])){
+    for(int i = idx; i < (int) hits.size(); i++){
+      if(hits[i].getEnergy() < minClusterHitEdep){
+        std::cout << "hit " << idx << "has energy less than threshold\n";
+        continue;
+      }else if(is_neighbour(hits[idx], hits[i])){
         std::cout << i << " ";
         nlist.push_back(i);
       }
@@ -224,36 +227,58 @@ namespace Jug::Reco {
     return nlist;
   }
 
-  // Find representative / root node of a component
-  inline int representative(const int idx, const std::vector<int>& __restrict__ hits){
-
-    return 0;
+  // Find representative / root node of a component with Intermediate-Pointer Jumping (Path Compression)
+  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::read_write> dsu) {
+    int par = dsu[idx];
+    if(par != idx){
+      int next, prev = idx;
+      while(par > (next = dsu[par])){
+        dsu[prev] = next;   // Intermediate Path Compression / pointer jumping
+        prev = par;
+        par = next;
+      }
+    }
+    return par;
   }
 
-  // parallel grouping algorithm
-  void CalorimeterIslandCluster::parallel_group(std::vector<std::pair<uint32_t, CaloHit>>& group,
+  // Parallel Grouping Algorithm (ECL-CC)
+  void CalorimeterIslandCluster::parallel_group(std::vector<std::vector<std::pair<uint32_t, CaloHit>>>& groups,
                 const CaloHitCollection& hits) const {
     
-    // Host memory
-    std::vector<int> dsu(hits.size());
+    // Corner Cases
+    if(hits.size() <= 0) return;
 
-    // Convert Hits data to Adjacency List for SYCL computation
-    std::vector<std::vector<int>> adj (hits.size());
+    // Convert Hits data to CSR Format for Device Offload
+    std::vector<int> nidx {0}, nlist;
+    int curr_size = 0;
     for(size_t i = 0; i < hits.size(); i++){
-      adj[i] = get_neighbours(hits, i);
+      if(hits[i].getEnergy() < minClusterHitEdep) continue;
+
+      auto neigh = get_neighbours(hits, i);
+      curr_size += (int)neigh.size();
+      nidx.push_back(curr_size);
+      for(int t : neigh){
+        nlist.push_back(t);
+      }
     }
+
+    // Host memory
+    //
+    // Disjoint-Set Union or Union-Find Structure
+    std::vector<int> dsu(nidx.size() - 1);
 
     {
       // Device memory
-      sycl::buffer<int, 1> dsu_buf(dsu.data(), sycl::range<1>(dsu.size()));
-      //sycl::buffer<int, 2> adj_buf(adj.data().data(), sycl::range<2>(adj.size(), adj[0].size())); Doesn't work as 2D vector is non-continguous
+      sycl::buffer<int, 1> dsu_buf (dsu.data(), sycl::range<1>(dsu.size()));
+      sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
+      sycl::buffer<int, 1> nlist_buf (nlist.data(), sycl::range<1>(nlist.size()));
       
 
       try{
             // Initalize DSU Structure
             queue.submit([&](sycl::handler& h){
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::write>(h);
-              h.parallel_for(sycl::range<1>(hits.size()), [=](sycl::id<1> idx){
+              h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
                 dsu_acc[idx] = idx;
               });
             });
@@ -261,18 +286,77 @@ namespace Jug::Reco {
             // Hooking (Union)
             queue.submit([&](sycl::handler& h){
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::read_write>(h);
-              h.parallel_for(sycl::range<1>(hits.size()), [=](sycl::id<1> idx){
+              auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
+              auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
+              sycl::stream dbg (1024,1024,h);
+              h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
+                dbg << "Started Hooking at idx: " << idx << "\n";
+                const int begin = nidx_acc[idx];
+                const int end = nidx_acc[idx+1];
+                
+                int v_rep = representative(idx, dsu_acc);
+                dbg << "Representative of " << idx << " is " << v_rep << "\n";
 
-
+                for(int i = begin; i < end; i++){
+                  
+                  const int neigh = nlist_acc[i];
+                  dbg << "Current Neighbour: " << neigh << "\n";
+                  if(true){    // Process edges only in one direction - doesn't work in our case ?? FIX
+                    int u_rep = representative(neigh, dsu_acc);
+                    bool repeat = false;
+                    do {
+                      repeat = false;
+                      // Check if they belong to different components and update respresentative to smaller one
+                      if(v_rep != u_rep){
+                        if(v_rep < u_rep){
+                          int ret = u_rep;
+                          auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
+                                                      sycl::memory_scope::device,
+                                                      sycl::access::address_space::ext_intel_global_device_space>(dsu_acc[u_rep]);
+                          atm.compare_exchange_strong(ret, v_rep); // Handle changes to representative by other threads
+                          if(ret != u_rep){
+                            u_rep = ret;
+                            repeat = true;
+                          }
+                        }else{
+                          int ret = v_rep;
+                          auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
+                                                      sycl::memory_scope::device,
+                                                      sycl::access::address_space::ext_intel_global_device_space>(dsu_acc[v_rep]);
+                          repeat = atm.compare_exchange_strong(ret, u_rep); // Handle changes to representative by other threads
+                          if(ret != v_rep){
+                            v_rep = ret;
+                            repeat = true;
+                          }
+                        }
+                      }
+                    } while(repeat);
+                  }
+                }
 
               });
-            });
-      }catch(std::exception e){
+            }).wait_and_throw();
+      }catch(sycl::exception e){
         std::cerr << "Caught SYCL Exception: " << e.what() << "\n";
       }
 
     } // Sync Device and Host memory
 
+    for(int i : dsu){
+      std::cout << i << " ";
+    }
+    std::cout << "\n";
+
+    int cur_hit = dsu[0];
+    groups.emplace_back();
+    for(uint32_t i = 0; i < dsu.size(); i++){
+      if(dsu[i] == cur_hit){
+        groups.back().emplace_back(i, hits[i]);
+      }else{
+        groups.emplace_back();
+        cur_hit = dsu[i];
+      }
+    }
 
   }
 
@@ -282,12 +366,16 @@ namespace Jug::Reco {
     // not a qualified hit to particpate clustering, stop here
     if (hits[idx].getEnergy() < minClusterHitEdep) {
       visits[idx] = true;
+      std::cout << "hit " << idx << "has energy less than threshold\n";
       return;
     }
 
     group.emplace_back(idx, hits[idx]);
     visits[idx] = true;
     for (size_t i = 0; i < hits.size(); ++i) {
+      if(is_neighbour(hits[idx], hits[i])){
+        std::cout << idx << " and " << i << " are neighbours\n";
+      }
       if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
         continue;
       }
@@ -345,7 +433,7 @@ namespace Jug::Reco {
     return maxima;
   }
 
-  // helper function - Parallelization not needed
+  // helper function
   inline void CalorimeterIslandCluster::vec_normalize(std::vector<double>& vals) {
     double total = 0.;
     for (auto& val : vals) {
