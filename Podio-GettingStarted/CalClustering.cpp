@@ -97,6 +97,7 @@ int main(int argc, char** argv) {
         }
 
         // Process Event
+        if(i == 999)
         processEvent(store, i, p);
 
         //writer.writeEvent();
