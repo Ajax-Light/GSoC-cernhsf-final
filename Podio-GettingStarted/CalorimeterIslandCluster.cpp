@@ -170,9 +170,9 @@ namespace Jug::Reco {
       if (visits[i]) {
         continue;
       }
-      cgroups.emplace_back();
+      groups.emplace_back();
       // create a new group, and group all the neighboring hits
-      dfs_group(cgroups.back(), i, hits, visits);
+      dfs_group(groups.back(), i, hits, visits);
     }  */
 
     parallel_group(groups, hits);
@@ -213,8 +213,8 @@ namespace Jug::Reco {
   std::vector<int> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits, int idx) const{
     std::vector<int> nlist;
     std::cout << "Index: " << idx << " Neighbours: ";
-    for(int i = idx; i < (int) hits.size(); i++){
-      if(hits[i].getEnergy() < minClusterHitEdep || i == idx){
+    for(int i = 0; i < (int) hits.size(); i++){
+      if(hits[i].getEnergy() < minClusterHitEdep){
         continue;
       }else if(is_neighbour(hits[idx], hits[i])){
         std::cout << i << " ";
@@ -226,12 +226,12 @@ namespace Jug::Reco {
   }
 
   // Find representative / root node of a component with Intermediate-Pointer Jumping (Path Compression)
-  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::read_write> dsu) {
-    int par = dsu[idx];
+  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::atomic> dsu) {
+    int par = dsu[idx].load();
     if(par != idx){
       int next, prev = idx;
-      while(par > (next = dsu[par])){
-        dsu[prev] = next;   // Intermediate Path Compression / pointer jumping
+      while(par > (next = dsu[par].load())){
+        dsu[prev].store(next);   // Intermediate Path Compression / pointer jumping
         prev = par;
         par = next;
       }
@@ -286,7 +286,7 @@ namespace Jug::Reco {
 
             // Hooking (Union)
             queue.submit([&](sycl::handler& h){
-              auto dsu_acc = dsu_buf.get_access<sycl::access::mode::read_write>(h);
+              auto dsu_acc = dsu_buf.get_access<sycl::access::mode::atomic>(h);
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
               auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
               auto vis_acc = visits_buf.get_access<sycl::access::mode::atomic>(h);
@@ -302,13 +302,14 @@ namespace Jug::Reco {
                 for(int i = begin; i < end; i++){
                   
                   const int neigh = nlist_acc[i];
-                  int test = neigh;
+                  int vis_rep = representative(neigh, vis_acc);
                   if(vis_acc[neigh].load() < idx)
                     continue;
                   
+                  int test = vis_rep;
                   vis_acc[neigh].compare_exchange_strong(test, idx);
                   //dbg << "Current Neighbour: " << neigh << "\n";
-                  if(test == neigh){    // Process edges only in one direction
+                  if(test == vis_rep){    // Process edges only in one direction
                     int u_rep = representative(neigh, dsu_acc);
                     bool repeat = false;
                     do {
@@ -317,20 +318,14 @@ namespace Jug::Reco {
                       if(v_rep != u_rep){
                         if(v_rep < u_rep){
                           int ret = u_rep;
-                          auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                                      sycl::memory_scope::device,
-                                                      sycl::access::address_space::ext_intel_global_device_space>(dsu_acc[u_rep]);
-                          atm.compare_exchange_strong(ret, v_rep); // Handle changes to representative by other threads
+                          dsu_acc[u_rep].compare_exchange_strong(ret, v_rep); // Handle changes to representative by other threads
                           if(ret != u_rep){
                             u_rep = ret;
                             repeat = true;
                           }
                         }else{
                           int ret = v_rep;
-                          auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                                      sycl::memory_scope::device,
-                                                      sycl::access::address_space::ext_intel_global_device_space>(dsu_acc[v_rep]);
-                          repeat = atm.compare_exchange_strong(ret, u_rep); // Handle changes to representative by other threads
+                          repeat = dsu_acc[v_rep].compare_exchange_strong(ret, u_rep); // Handle changes to representative by other threads
                           if(ret != v_rep){
                             v_rep = ret;
                             repeat = true;
@@ -339,6 +334,7 @@ namespace Jug::Reco {
                       }
                     } while(repeat);
                   }
+
                 }
 
               });
