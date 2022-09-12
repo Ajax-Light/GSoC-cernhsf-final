@@ -156,7 +156,7 @@ namespace Jug::Reco {
     // group neighboring hits
     std::vector<std::vector<std::pair<uint32_t, CaloHit>>> groups;
 
-/*     std::vector<bool> visits(hits.size(), false);
+    std::vector<bool> visits(hits.size(), false);
     for (size_t i = 0; i < hits.size(); ++i) {
       if (p.is_debug) {
         const auto& hit = hits[i];
@@ -173,9 +173,9 @@ namespace Jug::Reco {
       groups.emplace_back();
       // create a new group, and group all the neighboring hits
       dfs_group(groups.back(), i, hits, visits);
-    }  */
+    } 
 
-    parallel_group(groups, hits);
+    //parallel_group(groups, hits);
 
     for (auto& group : groups) {
       if (group.empty()) {
@@ -264,23 +264,19 @@ namespace Jug::Reco {
     //
     // Disjoint-Set Union or Union-Find Structure
     std::vector<int> dsu(nidx.size() - 1);
-    std::vector<int> visits(dsu.size());
 
     {
       // Device memory
       sycl::buffer<int, 1> dsu_buf (dsu.data(), sycl::range<1>(dsu.size()));
       sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
       sycl::buffer<int, 1> nlist_buf (nlist.data(), sycl::range<1>(nlist.size()));
-      sycl::buffer<int, 1> visits_buf (visits.data(), sycl::range<1>(visits.size()));
 
       try{
             // Initalize DSU Structure
             queue.submit([&](sycl::handler& h){
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::write>(h);
-              auto vis_acc = visits_buf.get_access<sycl::access::mode::write>(h);
               h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
                 dsu_acc[idx] = idx;
-                vis_acc[idx] = idx;
               });
             });
 
@@ -289,52 +285,24 @@ namespace Jug::Reco {
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::atomic>(h);
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
               auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
-              auto vis_acc = visits_buf.get_access<sycl::access::mode::atomic>(h);
               sycl::stream dbg (1024,1024,h);
               h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
-                //dbg << "Started Hooking at idx: " << idx << "\n";
+                
                 const int begin = nidx_acc[idx];
                 const int end = nidx_acc[idx+1];
-                
-                int v_rep = representative(idx, dsu_acc);
-                //dbg << "Representative of " << idx << " is " << v_rep << "\n";
 
                 for(int i = begin; i < end; i++){
-                  
                   const int neigh = nlist_acc[i];
-                  int vis_rep = representative(neigh, vis_acc);
-                  if(vis_acc[neigh].load() < idx)
-                    continue;
-                  
-                  int test = vis_rep;
-                  vis_acc[neigh].compare_exchange_strong(test, idx);
-                  //dbg << "Current Neighbour: " << neigh << "\n";
-                  if(test == vis_rep){    // Process edges only in one direction
-                    int u_rep = representative(neigh, dsu_acc);
-                    bool repeat = false;
-                    do {
-                      repeat = false;
-                      // Check if they belong to different components and update respresentative to smaller one
-                      if(v_rep != u_rep){
-                        if(v_rep < u_rep){
-                          int ret = u_rep;
-                          dsu_acc[u_rep].compare_exchange_strong(ret, v_rep); // Handle changes to representative by other threads
-                          if(ret != u_rep){
-                            u_rep = ret;
-                            repeat = true;
-                          }
-                        }else{
-                          int ret = v_rep;
-                          repeat = dsu_acc[v_rep].compare_exchange_strong(ret, u_rep); // Handle changes to representative by other threads
-                          if(ret != v_rep){
-                            v_rep = ret;
-                            repeat = true;
-                          }
-                        }
-                      }
-                    } while(repeat);
-                  }
-
+                  bool repeat = false;
+                  do {
+                    repeat = false;
+                    int ret = dsu_acc[neigh].load();
+                    if(ret > idx)
+                      dsu_acc[neigh].compare_exchange_strong(ret, idx);
+                    if(ret != dsu_acc[neigh].load()){
+                      repeat = true;
+                    }
+                  }while(repeat);
                 }
 
               });
@@ -367,7 +335,7 @@ namespace Jug::Reco {
     // not a qualified hit to particpate clustering, stop here
     if (hits[idx].getEnergy() < minClusterHitEdep) {
       visits[idx] = true;
-      std::cout << "hit " << idx << "has energy less than threshold\n";
+      //std::cout << "hit " << idx << "has energy less than threshold\n";
       return;
     }
 
@@ -375,7 +343,7 @@ namespace Jug::Reco {
     visits[idx] = true;
     for (size_t i = 0; i < hits.size(); ++i) {
       if(is_neighbour(hits[idx], hits[i])){
-        std::cout << idx << " and " << i << " are neighbours\n";
+        //std::cout << idx << " and " << i << " are neighbours\n";
       }
       if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
         continue;
