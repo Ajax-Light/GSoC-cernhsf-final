@@ -156,7 +156,7 @@ namespace Jug::Reco {
     // group neighboring hits
     std::vector<std::vector<std::pair<uint32_t, CaloHit>>> groups;
 
-    std::vector<bool> visits(hits.size(), false);
+/*     std::vector<bool> visits(hits.size(), false);
     for (size_t i = 0; i < hits.size(); ++i) {
       if (p.is_debug) {
         const auto& hit = hits[i];
@@ -173,9 +173,9 @@ namespace Jug::Reco {
       groups.emplace_back();
       // create a new group, and group all the neighboring hits
       dfs_group(groups.back(), i, hits, visits);
-    } 
+    }  */
 
-    //parallel_group(groups, hits);
+    parallel_group(groups, hits);
 
     for (auto& group : groups) {
       if (group.empty()) {
@@ -225,26 +225,71 @@ namespace Jug::Reco {
     return nlist;
   }
 
-  // Find representative / root node of a component with Intermediate-Pointer Jumping (Path Compression)
-  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::atomic> dsu) {
-    int par = dsu[idx].load();
-    if(par != idx){
-      int next, prev = idx;
-      while(par > (next = dsu[par].load())){
-        dsu[prev].store(next);   // Intermediate Path Compression / pointer jumping
-        prev = par;
-        par = next;
+  // Functor to find neighbours within SYCL code
+  struct neighbour {
+
+    neighbour(sycl::accessor<int32_t,1,sycl::access::mode::read>& sectors,
+              sycl::accessor<float,1,sycl::access::mode::read>& lx,
+              sycl::accessor<float,1,sycl::access::mode::read>& ly,
+              sycl::accessor<float,1,sycl::access::mode::read>& lz,
+              sycl::accessor<float,1,sycl::access::mode::read>& gx,
+              sycl::accessor<float,1,sycl::access::mode::read>& gy,
+              sycl::accessor<float,1,sycl::access::mode::read>& gz,
+              sycl::accessor<double,1,sycl::access::mode::read>& nDist,
+              sycl::accessor<double,1,sycl::access::mode::read>& secDist):
+              sectors(sectors), lx(lx), ly(ly), lz(lz), gx(gx), gy(gy), gz(gz), nDist(nDist), secDist(secDist) {}
+
+    // is_neighbour
+    bool operator()(sycl::id<1> hit1, sycl::id<1> hit2){
+      if(sectors[hit1] == sectors[hit2]){
+        // localXY
+        float a = lx[hit1] - lx[hit2];
+        float b = ly[hit1] - lx[hit2];
+        return (a <= nDist[0] && b <= nDist[1]);
+      } else {
+        float x = gx[hit1] - gx[hit2];
+        float y = gy[hit1] - gy[hit2];
+        float z = gz[hit1] - gz[hit2];
+        double magnitude = sycl::sqrt(x*x+y*y+z*z);
+        return (magnitude <= secDist[0]);
       }
     }
-    return par;
+
+    private:
+      sycl::accessor<int32_t,1,sycl::access::mode::read>& sectors;
+      sycl::accessor<float,1,sycl::access::mode::read>& lx,ly,lz,gx,gy,gz;
+      sycl::accessor<double,1,sycl::access::mode::read>& nDist,secDist;
+
+  };
+
+  //Overload is_neighbour for use within SYCL Device code
+  SYCL_EXTERNAL inline bool is_neighbour(sycl::id<1> hit1, sycl::id<1> hit2, sycl::accessor<int,1,sycl::access::mode::read>& nidx){
+    // Get Hit x,y,z,sector,position as accessors
+    
   }
 
   // Parallel Grouping Algorithm (ECL-CC)
   void CalorimeterIslandCluster::parallel_group(std::vector<std::vector<std::pair<uint32_t, CaloHit>>>& groups,
                 const CaloHitCollection& hits) const {
-    
+
     // Corner Cases
     if(hits.size() <= 0) return;
+
+    // Host memory
+    //
+    // Get required location data from hits
+    std::vector<int32_t> sectors;
+    std::vector<float> lx,ly,lz,gx,gy,gz;
+
+    for(size_t i = 0; i < hits.size(); i++){
+      sectors.emplace_back(hits[i].getSector());
+      gx.emplace_back(hits[i].getPosition().x);
+      lx.emplace_back(hits[i].getLocal().x);
+      gy.emplace_back(hits[i].getPosition().y);
+      ly.emplace_back(hits[i].getLocal().y);
+      gz.emplace_back(hits[i].getPosition().z);
+      lz.emplace_back(hits[i].getLocal().z);
+    }
 
     // Convert Hits data to CSR Format for Device Offload
     std::vector<int> nidx {0}, nlist;
@@ -260,8 +305,7 @@ namespace Jug::Reco {
       }
     }
 
-    // Host memory
-    //
+
     // Disjoint-Set Union or Union-Find Structure
     std::vector<int> dsu(nidx.size() - 1);
 
@@ -270,6 +314,17 @@ namespace Jug::Reco {
       sycl::buffer<int, 1> dsu_buf (dsu.data(), sycl::range<1>(dsu.size()));
       sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
       sycl::buffer<int, 1> nlist_buf (nlist.data(), sycl::range<1>(nlist.size()));
+
+      sycl::buffer<float, 1> lx_buf (lx.data(), sycl::range<1>(lx.size()));
+      sycl::buffer<float, 1> ly_buf (ly.data(), sycl::range<1>(ly.size()));
+      sycl::buffer<float, 1> lz_buf (lz.data(), sycl::range<1>(lz.size()));
+      sycl::buffer<float, 1> gx_buf (gx.data(), sycl::range<1>(gx.size()));
+      sycl::buffer<float, 1> gy_buf (gy.data(), sycl::range<1>(gy.size()));
+      sycl::buffer<float, 1> gz_buf (gz.data(), sycl::range<1>(gz.size()));
+
+      sycl::buffer<int32_t,1> sectors_buf (sectors.data(), sycl::range<1>(sectors.size()));
+      sycl::buffer<double, 1> sectorDist_buf (&sectorDist, sycl::range<1>(1));
+      sycl::buffer<double, 1> neighbourDist_buf (neighbourDist.data(), sycl::range<1>(neighbourDist.size()));
 
       try{
             // Initalize DSU Structure
@@ -285,6 +340,20 @@ namespace Jug::Reco {
               auto dsu_acc = dsu_buf.get_access<sycl::access::mode::atomic>(h);
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
               auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
+
+              auto lx_acc = lx_buf.get_access<sycl::access::mode::read>(h);
+              auto ly_acc = ly_buf.get_access<sycl::access::mode::read>(h);
+              auto lz_acc = lz_buf.get_access<sycl::access::mode::read>(h);
+              auto gx_acc = gx_buf.get_access<sycl::access::mode::read>(h);
+              auto gy_acc = gy_buf.get_access<sycl::access::mode::read>(h);
+              auto gz_acc = gz_buf.get_access<sycl::access::mode::read>(h);
+
+              auto sectors_acc = sectors_buf.get_access<sycl::access::mode::read>(h);
+              auto sectorDist_acc = sectorDist_buf.get_access<sycl::access::mode::read>(h);
+              auto neighbourDist_acc = neighbourDist_buf.get_access<sycl::access::mode::read>(h);
+
+              neighbour n(sectors_acc,lx_acc,ly_acc,lz_acc,gx_acc,gy_acc,gz_acc,neighbourDist_acc,sectorDist_acc);
+
               sycl::stream dbg (1024,1024,h);
               h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
                 
