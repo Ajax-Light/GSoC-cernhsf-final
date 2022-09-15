@@ -209,59 +209,6 @@ namespace Jug::Reco {
     }
   }
 
-  // Get Neighbour hit indices
-  std::vector<int> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits, int idx) const{
-    std::vector<int> nlist;
-    std::cout << "Index: " << idx << " Neighbours: ";
-    for(int i = 0; i < (int) hits.size(); i++){
-      if(hits[i].getEnergy() < minClusterHitEdep){
-        continue;
-      }else if(is_neighbour(hits[idx], hits[i])){
-        std::cout << i << " ";
-        nlist.push_back(i);
-      }
-    }
-    std::cout << "\n";
-    return nlist;
-  }
-
-  // Functor to find neighbours within SYCL code
-  struct neighbour {
-
-    neighbour(sycl::accessor<int32_t,1,sycl::access::mode::read>& sectors,
-              sycl::accessor<float,1,sycl::access::mode::read>& lx,
-              sycl::accessor<float,1,sycl::access::mode::read>& ly,
-              sycl::accessor<float,1,sycl::access::mode::read>& lz,
-              sycl::accessor<float,1,sycl::access::mode::read>& gx,
-              sycl::accessor<float,1,sycl::access::mode::read>& gy,
-              sycl::accessor<float,1,sycl::access::mode::read>& gz,
-              sycl::accessor<double,1,sycl::access::mode::read>& nDist,
-              sycl::accessor<double,1,sycl::access::mode::read>& secDist):
-              sectors(sectors), lx(lx), ly(ly), lz(lz), gx(gx), gy(gy), gz(gz), nDist(nDist), secDist(secDist) {}
-
-    // is_neighbour
-    bool operator() (sycl::id<1> hit1, sycl::id<1> hit2) const {
-      if(sectors[hit1] == sectors[hit2]) {
-        // localXY
-        float a = lx[hit1] - lx[hit2];
-        float b = ly[hit1] - lx[hit2];
-        return (a <= nDist[0] && b <= nDist[1]);
-      } else {
-        float x = gx[hit1] - gx[hit2];
-        float y = gy[hit1] - gy[hit2];
-        float z = gz[hit1] - gz[hit2];
-        double magnitude = sycl::sqrt(x*x+y*y+z*z);
-        return (magnitude <= secDist[0]);
-      }
-    }
-
-    private:
-      sycl::accessor<int32_t,1,sycl::access::mode::read> sectors;
-      sycl::accessor<float,1,sycl::access::mode::read> lx,ly,lz,gx,gy,gz;
-      sycl::accessor<double,1,sycl::access::mode::read> nDist,secDist;
-
-  };
-
   // Parallel Grouping Algorithm (ECL-CC)
   void CalorimeterIslandCluster::parallel_group(std::vector<std::vector<std::pair<uint32_t, CaloHit>>>& groups,
                 const CaloHitCollection& hits) const {
@@ -287,8 +234,7 @@ namespace Jug::Reco {
       lz.emplace_back(hits[i].getLocal().z);
     }
 
-
-    // Disjoint-Set Union or Union-Find Structure
+    // Neighbour Indices
     std::vector<int> nidx(sectors.size());
 
     {
@@ -307,7 +253,7 @@ namespace Jug::Reco {
       sycl::buffer<double, 1> neighbourDist_buf (neighbourDist.data(), sycl::range<1>(neighbourDist.size()));
 
       try{
-            // Initalize DSU Structure
+            // Initalize Neighbour Indices
             queue.submit([&](sycl::handler& h){
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::write>(h);
               h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx){
@@ -315,7 +261,7 @@ namespace Jug::Reco {
               });
             });
 
-            // Hooking (Union)
+            // Super Simple Algo
             queue.submit([&](sycl::handler& h){
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::atomic>(h);
 
@@ -330,15 +276,26 @@ namespace Jug::Reco {
               auto sectorDist_acc = sectorDist_buf.get_access<sycl::access::mode::read>(h);
               auto neighbourDist_acc = neighbourDist_buf.get_access<sycl::access::mode::read>(h);
 
-              neighbour neigh(sectors_acc,lx_acc,ly_acc,lz_acc,gx_acc,gy_acc,gz_acc,neighbourDist_acc,sectorDist_acc);
-
               sycl::stream dbg (1024,1024,h);
               h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx){
 
                 for(size_t i = 0; i < nidx_acc.size(); i++){
-                  dbg << "idx: "<< idx[1] << " i: " << i << " : " << neigh(idx[0], i) << "\n";
-                  if(!neigh(idx[0], i))
-                    continue;
+                  bool is_neighbour;
+                  auto hit1 = idx;
+                  auto hit2 = i;
+                  if(sectors_acc[hit1] == sectors_acc[hit2]) {
+                    // localXY
+                    float a = lx_acc[hit1] - lx_acc[hit2];
+                    float b = ly_acc[hit1] - ly_acc[hit2];
+                    is_neighbour = (a <= neighbourDist_acc[0] && b <= neighbourDist_acc[1]);
+                  } else {
+                    float x = gx_acc[hit1] - gx_acc[hit2];
+                    float y = gy_acc[hit1] - gy_acc[hit2];
+                    float z = gz_acc[hit1] - gz_acc[hit2];
+                    double magnitude = sycl::sqrt(x*x+y*y+z*z);
+                    is_neighbour = (magnitude <= sectorDist_acc[0]);
+                  }
+                  if(!is_neighbour) continue;
                   
                   const int neigh = i;
                   bool repeat = false;
@@ -361,6 +318,7 @@ namespace Jug::Reco {
 
     } // Sync Device and Host memory
 
+    // Emplace into groups for further processing
     std::cout << "Grouping Results are:\n";
     for(int i : nidx){
       std::cout << i << " ";
