@@ -209,98 +209,106 @@ namespace Jug::Reco {
     }
   }
 
-  // Get Neighbour hit indices
-  std::vector<int> CalorimeterIslandCluster::get_neighbours(const CaloHitCollection& hits, int idx) const{
-    std::vector<int> nlist;
-    std::cout << "Index: " << idx << " Neighbours: ";
-    for(int i = 0; i < (int) hits.size(); i++){
-      if(hits[i].getEnergy() < minClusterHitEdep){
-        continue;
-      }else if(is_neighbour(hits[idx], hits[i])){
-        std::cout << i << " ";
-        nlist.push_back(i);
-      }
-    }
-    std::cout << "\n";
-    return nlist;
-  }
-
-  // Find representative / root node of a component with Intermediate-Pointer Jumping (Path Compression)
-  SYCL_EXTERNAL inline int representative(const int idx, sycl::accessor<int,1,sycl::access::mode::atomic> dsu) {
-    int par = dsu[idx].load();
-    if(par != idx){
-      int next, prev = idx;
-      while(par > (next = dsu[par].load())){
-        dsu[prev].store(next);   // Intermediate Path Compression / pointer jumping
-        prev = par;
-        par = next;
-      }
-    }
-    return par;
-  }
-
   // Parallel Grouping Algorithm (ECL-CC)
   void CalorimeterIslandCluster::parallel_group(std::vector<std::vector<std::pair<uint32_t, CaloHit>>>& groups,
                 const CaloHitCollection& hits) const {
-    
+
     // Corner Cases
     if(hits.size() <= 0) return;
 
-    // Convert Hits data to CSR Format for Device Offload
-    std::vector<int> nidx {0}, nlist;
-    int curr_size = 0;
+    // Host memory
+    //
+    // Get location data from hits
+    std::vector<int32_t> sectors;
+    std::vector<float> lx,ly,lz,gx,gy,gz;
+
     for(size_t i = 0; i < hits.size(); i++){
       if(hits[i].getEnergy() < minClusterHitEdep) continue;
 
-      auto neigh = get_neighbours(hits, i);
-      curr_size += (int)neigh.size();
-      nidx.push_back(curr_size);
-      for(int t : neigh){
-        nlist.push_back(t);
-      }
+      sectors.emplace_back(hits[i].getSector());
+      gx.emplace_back(hits[i].getPosition().x);
+      lx.emplace_back(hits[i].getLocal().x);
+      gy.emplace_back(hits[i].getPosition().y);
+      ly.emplace_back(hits[i].getLocal().y);
+      gz.emplace_back(hits[i].getPosition().z);
+      lz.emplace_back(hits[i].getLocal().z);
     }
 
-    // Host memory
-    //
-    // Disjoint-Set Union or Union-Find Structure
-    std::vector<int> dsu(nidx.size() - 1);
+    // Neighbour Indices
+    std::vector<int> nidx(sectors.size());
 
     {
       // Device memory
-      sycl::buffer<int, 1> dsu_buf (dsu.data(), sycl::range<1>(dsu.size()));
       sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
-      sycl::buffer<int, 1> nlist_buf (nlist.data(), sycl::range<1>(nlist.size()));
+
+      sycl::buffer<float, 1> lx_buf (lx.data(), sycl::range<1>(lx.size()));
+      sycl::buffer<float, 1> ly_buf (ly.data(), sycl::range<1>(ly.size()));
+      sycl::buffer<float, 1> lz_buf (lz.data(), sycl::range<1>(lz.size()));
+      sycl::buffer<float, 1> gx_buf (gx.data(), sycl::range<1>(gx.size()));
+      sycl::buffer<float, 1> gy_buf (gy.data(), sycl::range<1>(gy.size()));
+      sycl::buffer<float, 1> gz_buf (gz.data(), sycl::range<1>(gz.size()));
+
+      sycl::buffer<int32_t,1> sectors_buf (sectors.data(), sycl::range<1>(sectors.size()));
+      sycl::buffer<double, 1> sectorDist_buf (&sectorDist, sycl::range<1>(1));
+      sycl::buffer<double, 1> neighbourDist_buf (neighbourDist.data(), sycl::range<1>(neighbourDist.size()));
 
       try{
-            // Initalize DSU Structure
+            // Initalize Neighbour Indices
             queue.submit([&](sycl::handler& h){
-              auto dsu_acc = dsu_buf.get_access<sycl::access::mode::write>(h);
-              auto vis_acc = visits_buf.get_access<sycl::access::mode::write>(h);
-              h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
-                dsu_acc[idx] = idx;
+              auto nidx_acc = nidx_buf.get_access<sycl::access::mode::write>(h);
+              h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx){
+                nidx_acc[idx] = idx;
               });
             });
 
-            // Hooking (Union)
+            /**
+             * @brief Assign vertex id to neighbour if vertex id < id held at
+             * neighbour index. Emulates sequential assignment of clusters by
+             * DFS in parallel.
+             */
             queue.submit([&](sycl::handler& h){
-              auto dsu_acc = dsu_buf.get_access<sycl::access::mode::atomic>(h);
-              auto nidx_acc = nidx_buf.get_access<sycl::access::mode::read>(h);
-              auto nlist_acc = nlist_buf.get_access<sycl::access::mode::read>(h);
-              sycl::stream dbg (1024,1024,h);
-              h.parallel_for(sycl::range<1>(dsu.size()), [=](sycl::id<1> idx){
-                
-                const int begin = nidx_acc[idx];
-                const int end = nidx_acc[idx+1];
+              auto nidx_acc = nidx_buf.get_access<sycl::access::mode::atomic>(h);
 
-                for(int i = begin; i < end; i++){
-                  const int neigh = nlist_acc[i];
+              auto lx_acc = lx_buf.get_access<sycl::access::mode::read>(h);
+              auto ly_acc = ly_buf.get_access<sycl::access::mode::read>(h);
+              auto lz_acc = lz_buf.get_access<sycl::access::mode::read>(h);
+              auto gx_acc = gx_buf.get_access<sycl::access::mode::read>(h);
+              auto gy_acc = gy_buf.get_access<sycl::access::mode::read>(h);
+              auto gz_acc = gz_buf.get_access<sycl::access::mode::read>(h);
+
+              auto sectors_acc = sectors_buf.get_access<sycl::access::mode::read>(h);
+              auto sectorDist_acc = sectorDist_buf.get_access<sycl::access::mode::read>(h);
+              auto neighbourDist_acc = neighbourDist_buf.get_access<sycl::access::mode::read>(h);
+
+              sycl::stream dbg (1024,1024,h);
+              h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx){
+
+                for(size_t i = 0; i < nidx_acc.size(); i++){
+                  bool is_neighbour;
+                  auto hit1 = idx;
+                  auto hit2 = i;
+                  if(sectors_acc[hit1] == sectors_acc[hit2]) {
+                    // localXY
+                    float a = lx_acc[hit1] - lx_acc[hit2];
+                    float b = ly_acc[hit1] - ly_acc[hit2];
+                    is_neighbour = (a <= neighbourDist_acc[0] && b <= neighbourDist_acc[1]);
+                  } else {
+                    float x = gx_acc[hit1] - gx_acc[hit2];
+                    float y = gy_acc[hit1] - gy_acc[hit2];
+                    float z = gz_acc[hit1] - gz_acc[hit2];
+                    double magnitude = sycl::sqrt(x*x+y*y+z*z);
+                    is_neighbour = (magnitude <= sectorDist_acc[0]);
+                  }
+                  if(!is_neighbour) continue;
+                  
+                  const int neigh = i;
                   bool repeat = false;
                   do {
                     repeat = false;
-                    int ret = dsu_acc[neigh].load();
+                    int ret = nidx_acc[neigh].load();
                     if(ret > idx)
-                      dsu_acc[neigh].compare_exchange_strong(ret, idx);
-                    if(ret != dsu_acc[neigh].load()){
+                      nidx_acc[neigh].compare_exchange_strong(ret, idx);
+                    if(ret != nidx_acc[neigh].load()){
                       repeat = true;
                     }
                   }while(repeat);
@@ -314,15 +322,16 @@ namespace Jug::Reco {
 
     } // Sync Device and Host memory
 
+    // Emplace index array into groups for further processing
     std::cout << "Grouping Results are:\n";
-    for(int i : dsu){
+    for(int i : nidx){
       std::cout << i << " ";
     }
     std::cout << "\n";
 
     std::unordered_map<int, std::vector<std::pair<uint32_t, CaloHit>>> gr;
     for(size_t i = 0; i < hits.size(); i++){
-      gr[dsu[i]].emplace_back(i, hits[i]);
+      gr[nidx[i]].emplace_back(i, hits[i]);
     }
     for(auto i : gr){
       groups.emplace_back(i.second);
@@ -336,7 +345,7 @@ namespace Jug::Reco {
     // not a qualified hit to particpate clustering, stop here
     if (hits[idx].getEnergy() < minClusterHitEdep) {
       visits[idx] = true;
-      std::cout << "hit " << idx << "has energy less than threshold\n";
+      //std::cout << "hit " << idx << "has energy less than threshold\n";
       return;
     }
 
@@ -344,7 +353,7 @@ namespace Jug::Reco {
     visits[idx] = true;
     for (size_t i = 0; i < hits.size(); ++i) {
       if(is_neighbour(hits[idx], hits[i])){
-        std::cout << idx << " and " << i << " are neighbours\n";
+        //std::cout << idx << " and " << i << " are neighbours\n";
       }
       if (visits[i] || !is_neighbour(hits[idx], hits[i])) {
         continue;
