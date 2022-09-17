@@ -226,11 +226,13 @@ namespace Jug::Reco {
     //
     // Get location data from hits
     std::vector<int32_t> sectors;
-    std::vector<float> lx,ly,lz,gx,gy,gz;
+    std::vector<float> lx,ly,lz,gx,gy,gz,energy;
+
+    // Neighbour Indices
+    std::vector<int> nidx (hits.size());
 
     for(size_t i = 0; i < hits.size(); i++) {
-      if(hits[i].getEnergy() < minClusterHitEdep) continue;
-
+      energy.emplace_back(hits[i].getEnergy());
       sectors.emplace_back(hits[i].getSector());
       gx.emplace_back(hits[i].getPosition().x);
       lx.emplace_back(hits[i].getLocal().x);
@@ -240,12 +242,11 @@ namespace Jug::Reco {
       lz.emplace_back(hits[i].getLocal().z);
     }
 
-    // Neighbour Indices
-    std::vector<int> nidx(sectors.size());
-
     {
       // Device memory
       sycl::buffer<int, 1> nidx_buf (nidx.data(), sycl::range<1>(nidx.size()));
+      sycl::buffer<double, 1> minClusterHitEdep_buf (&minClusterHitEdep, sycl::range<1>(1));
+      sycl::buffer<float, 1> energy_buf (energy.data(), sycl::range<1>(energy.size()));
 
       sycl::buffer<float, 1> lx_buf (lx.data(), sycl::range<1>(lx.size()));
       sycl::buffer<float, 1> ly_buf (ly.data(), sycl::range<1>(ly.size()));
@@ -262,8 +263,8 @@ namespace Jug::Reco {
             // Initalize Neighbour Indices
             queue.submit([&](sycl::handler& h) {
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::write>(h);
-              h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx) {
-                nidx_acc[idx] = idx;
+              h.parallel_for(sycl::range<1>(hits.size()), [=](sycl::id<1> idx) {
+                  nidx_acc[idx] = idx;
               });
             });
 
@@ -274,6 +275,8 @@ namespace Jug::Reco {
              */
             queue.submit([&](sycl::handler& h) {
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::atomic>(h);
+              auto minClusterHitEdep_acc = minClusterHitEdep_buf.get_access<sycl::access::mode::read>(h);
+              auto energy_acc = energy_buf.get_access<sycl::access::mode::read>(h);
 
               auto lx_acc = lx_buf.get_access<sycl::access::mode::read>(h);
               auto ly_acc = ly_buf.get_access<sycl::access::mode::read>(h);
@@ -287,9 +290,15 @@ namespace Jug::Reco {
               auto neighbourDist_acc = neighbourDist_buf.get_access<sycl::access::mode::read>(h);
 
               sycl::stream dbg (1024,1024,h);
-              h.parallel_for(sycl::range<1>(nidx.size()), [=](sycl::id<1> idx) {
+              h.parallel_for(sycl::range<1>(hits.size()), [=](sycl::id<1> idx) {
+                // not a qualified hit
+                if(energy_acc[idx] < minClusterHitEdep_acc[0]){
+                  return;
+                }
 
                 for(size_t i = 0; i < nidx_acc.size(); i++) {
+
+                  if(energy_acc[i] < minClusterHitEdep_acc[0]) continue;
 
                   if(!Jug::Reco::is_neighbour(lx_acc,ly_acc,lz_acc,gx_acc,gy_acc,gz_acc,
                                               sectors_acc,sectorDist_acc,neighbourDist_acc,idx, i))
