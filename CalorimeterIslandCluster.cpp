@@ -231,6 +231,7 @@ namespace Jug::Reco {
     // Neighbour Indices
     std::vector<int> nidx (hits.size());
 
+    // Can't filter out hits here as index numbers will not match
     for(size_t i = 0; i < hits.size(); i++) {
       energy.emplace_back(hits[i].getEnergy());
       sectors.emplace_back(hits[i].getSector());
@@ -269,9 +270,9 @@ namespace Jug::Reco {
             });
 
             /**
-             * @brief Assign vertex id to neighbour if vertex id < id held at
-             * neighbour index. Emulates sequential assignment of clusters by
-             * DFS in parallel.
+             * @brief Assign current vertex id (idx) to neighbour if idx < id
+             * held at neighbour index. Emulates sequential assignment of 
+             * clusters by DFS in parallel.
              */
             queue.submit([&](sycl::handler& h) {
               auto nidx_acc = nidx_buf.get_access<sycl::access::mode::atomic>(h);
@@ -304,17 +305,9 @@ namespace Jug::Reco {
                                               sectors_acc,sectorDist_acc,neighbourDist_acc,idx, i))
                     continue;
                   
-                  const int neigh = i;
-                  bool repeat = false;
-                  do {
-                    repeat = false;
-                    int ret = nidx_acc[neigh].load();
-                    if(ret > idx)
-                      nidx_acc[neigh].compare_exchange_strong(ret, idx);
-                    if(ret != nidx_acc[neigh].load()){
-                      repeat = true;
-                    }
-                  } while(repeat);
+                  // Atomic exchange of min element between current neighbour index nidx_acc[i] and idx
+                  nidx_acc[i].fetch_min(idx);
+
                 }
 
               });
@@ -326,11 +319,11 @@ namespace Jug::Reco {
     } // Sync Device and Host memory
 
     // Emplace index array into groups for further processing
-    std::cout << "Grouping Results are:\n";
+/*     std::cout << "Grouping Results are:\n";
     for(int i : nidx) {
       std::cout << i << " ";
     }
-    std::cout << "\n";
+    std::cout << "\n"; */
 
     std::unordered_map<int, std::vector<std::pair<uint32_t, CaloHit>>> gr;
     for(size_t i = 0; i < hits.size(); i++) {
@@ -482,7 +475,7 @@ namespace Jug::Reco {
     // Convert maxima index array to hit vector for further processing
     for(size_t i = 0; i < max_idx.size(); i++){
       if(max_idx[i] == 1){
-        std::cout << "Found maxima at: " << i << "\n";
+        //std::cout << "Found maxima at: " << i << "\n";
         maxima.push_back(group[i].second);
       }
     }
