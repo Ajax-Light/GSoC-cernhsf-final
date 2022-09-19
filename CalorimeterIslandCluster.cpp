@@ -162,9 +162,11 @@ namespace Jug::Reco {
       if (group.empty()) {
         continue;
       }
+
       for(auto p : group){
         std::cout << "Group: " << p.first << " Hit: " << p.second.id() << "\n";
       }
+
       auto maxima = find_maxima(group, !m_splitCluster);
       split_group(group, maxima, proto);
       if (p.is_debug) {
@@ -190,29 +192,21 @@ namespace Jug::Reco {
     }
   }
 
-  SYCL_EXTERNAL inline bool is_neighbour( const sycl::accessor<float,1,sycl::access::mode::read>& lx,
-                                          const sycl::accessor<float,1,sycl::access::mode::read>& ly,
-                                          const sycl::accessor<float,1,sycl::access::mode::read>& lz,
-                                          const sycl::accessor<float,1,sycl::access::mode::read>& gx,
-                                          const sycl::accessor<float,1,sycl::access::mode::read>& gy,
-                                          const sycl::accessor<float,1,sycl::access::mode::read>& gz,
+  SYCL_EXTERNAL inline bool is_neighbour( const sycl::accessor<sycl::float3,1,sycl::access::mode::read>& lpos,
+                                          const sycl::accessor<sycl::float3,1,sycl::access::mode::read>& gpos,
                                           const sycl::accessor<int,1,sycl::access::mode::read>& sectors,
                                           const sycl::accessor<double,1,sycl::access::mode::read>& secDist,
                                           const sycl::accessor<double,1,sycl::access::mode::read>& neighDist,
                                           sycl::id<1> hit1, int hit2){
     
     if(sectors[hit1] == sectors[hit2]) {
-                    // localXY
-                    float a = lx[hit1] - lx[hit2];
-                    float b = ly[hit1] - ly[hit2];
-                    return (a <= neighDist[0] && b <= neighDist[1]);
-                  } else {
-                    float x = gx[hit1] - gx[hit2];
-                    float y = gy[hit1] - gy[hit2];
-                    float z = gz[hit1] - gz[hit2];
-                    double magnitude = sycl::sqrt(x*x+y*y+z*z);
-                    return (magnitude <= secDist[0]);
-                  }
+        // localXY
+        auto delta = lpos[hit1] - lpos[hit2];
+        return (delta.x() <= neighDist[0] && delta.y() <= neighDist[1]);
+      } else {
+        auto delta = gpos[hit1] - gpos[hit2];
+        return (sycl::length(delta) <= secDist[0]);
+      }
   }
 
   // Parallel Grouping Algorithm
@@ -226,21 +220,18 @@ namespace Jug::Reco {
     //
     // Get location data from hits
     std::vector<int32_t> sectors;
-    std::vector<float> lx,ly,lz,gx,gy,gz,energy;
+    std::vector<float> energy;
+    std::vector<sycl::vec<float, 3>> lpos, gpos;
 
     // Neighbour Indices
     std::vector<int> nidx (hits.size());
 
     // Can't filter out hits here as index numbers will not match
     for(size_t i = 0; i < hits.size(); i++) {
+      lpos.emplace_back(hits[i].getLocal().x, hits[i].getLocal().y, hits[i].getLocal().z);
+      gpos.emplace_back(hits[i].getPosition().x, hits[i].getPosition().y, hits[i].getPosition().z);
       energy.emplace_back(hits[i].getEnergy());
       sectors.emplace_back(hits[i].getSector());
-      gx.emplace_back(hits[i].getPosition().x);
-      lx.emplace_back(hits[i].getLocal().x);
-      gy.emplace_back(hits[i].getPosition().y);
-      ly.emplace_back(hits[i].getLocal().y);
-      gz.emplace_back(hits[i].getPosition().z);
-      lz.emplace_back(hits[i].getLocal().z);
     }
 
     {
@@ -249,12 +240,8 @@ namespace Jug::Reco {
       sycl::buffer<double, 1> minClusterHitEdep_buf (&minClusterHitEdep, sycl::range<1>(1));
       sycl::buffer<float, 1> energy_buf (energy.data(), sycl::range<1>(energy.size()));
 
-      sycl::buffer<float, 1> lx_buf (lx.data(), sycl::range<1>(lx.size()));
-      sycl::buffer<float, 1> ly_buf (ly.data(), sycl::range<1>(ly.size()));
-      sycl::buffer<float, 1> lz_buf (lz.data(), sycl::range<1>(lz.size()));
-      sycl::buffer<float, 1> gx_buf (gx.data(), sycl::range<1>(gx.size()));
-      sycl::buffer<float, 1> gy_buf (gy.data(), sycl::range<1>(gy.size()));
-      sycl::buffer<float, 1> gz_buf (gz.data(), sycl::range<1>(gz.size()));
+      sycl::buffer<sycl::float3,1> lpos_buf (lpos.data(), sycl::range<1>(lpos.size()));
+      sycl::buffer<sycl::float3,1> gpos_buf (gpos.data(), sycl::range<1>(lpos.size()));
 
       sycl::buffer<int,1> sectors_buf (sectors.data(), sycl::range<1>(sectors.size()));
       sycl::buffer<double, 1> sectorDist_buf (&sectorDist, sycl::range<1>(1));
@@ -279,12 +266,8 @@ namespace Jug::Reco {
               auto minClusterHitEdep_acc = minClusterHitEdep_buf.get_access<sycl::access::mode::read>(h);
               auto energy_acc = energy_buf.get_access<sycl::access::mode::read>(h);
 
-              auto lx_acc = lx_buf.get_access<sycl::access::mode::read>(h);
-              auto ly_acc = ly_buf.get_access<sycl::access::mode::read>(h);
-              auto lz_acc = lz_buf.get_access<sycl::access::mode::read>(h);
-              auto gx_acc = gx_buf.get_access<sycl::access::mode::read>(h);
-              auto gy_acc = gy_buf.get_access<sycl::access::mode::read>(h);
-              auto gz_acc = gz_buf.get_access<sycl::access::mode::read>(h);
+              auto lpos_acc = lpos_buf.get_access<sycl::access::mode::read>(h);
+              auto gpos_acc = gpos_buf.get_access<sycl::access::mode::read>(h);
 
               auto sectors_acc = sectors_buf.get_access<sycl::access::mode::read>(h);
               auto sectorDist_acc = sectorDist_buf.get_access<sycl::access::mode::read>(h);
@@ -301,9 +284,9 @@ namespace Jug::Reco {
 
                   if(energy_acc[i] < minClusterHitEdep_acc[0]) continue;
 
-                  if(!Jug::Reco::is_neighbour(lx_acc,ly_acc,lz_acc,gx_acc,gy_acc,gz_acc,
-                                              sectors_acc,sectorDist_acc,neighbourDist_acc,idx, i))
+                  if(!Jug::Reco::is_neighbour(lpos_acc,gpos_acc,sectors_acc,sectorDist_acc,neighbourDist_acc,idx,i)){
                     continue;
+                  }
                   
                   // Atomic exchange of min element between current neighbour index nidx_acc[i] and idx
                   nidx_acc[i].fetch_min(idx);
@@ -388,17 +371,13 @@ namespace Jug::Reco {
 
     // Get location data from hits
     std::vector<int32_t> sectors;
-    std::vector<float> lx,ly,lz,gx,gy,gz;
+    std::vector<sycl::vec<float, 3>> lpos, gpos;
 
     for (const auto& [idx, hit] : group){
+      lpos.emplace_back(hit.getLocal().x, hit.getLocal().y, hit.getLocal().z);
+      gpos.emplace_back(hit.getPosition().x, hit.getPosition().y, hit.getPosition().z);
       energy.push_back(hit.getEnergy());
       sectors.push_back(hit.getSector());
-      gx.push_back(hit.getPosition().x);
-      lx.push_back(hit.getLocal().x);
-      gy.push_back(hit.getPosition().y);
-      ly.push_back(hit.getLocal().y);
-      gz.push_back(hit.getPosition().z);
-      lz.push_back(hit.getLocal().z);
     }
 
     // Device memory
@@ -408,12 +387,8 @@ namespace Jug::Reco {
       sycl::buffer<uint8_t, 1> max_idx_buf (max_idx.data(), sycl::range<1>(max_idx.size()));
       sycl::buffer<double, 1> minClusterCenterEdep_buf (&minClusterCenterEdep, sycl::range<1>(1));
 
-      sycl::buffer<float, 1> lx_buf (lx.data(), sycl::range<1>(lx.size()));
-      sycl::buffer<float, 1> ly_buf (ly.data(), sycl::range<1>(ly.size()));
-      sycl::buffer<float, 1> lz_buf (lz.data(), sycl::range<1>(lz.size()));
-      sycl::buffer<float, 1> gx_buf (gx.data(), sycl::range<1>(gx.size()));
-      sycl::buffer<float, 1> gy_buf (gy.data(), sycl::range<1>(gy.size()));
-      sycl::buffer<float, 1> gz_buf (gz.data(), sycl::range<1>(gz.size()));
+      sycl::buffer<sycl::float3,1> lpos_buf (lpos.data(), sycl::range<1>(lpos.size()));
+      sycl::buffer<sycl::float3,1> gpos_buf (gpos.data(), sycl::range<1>(lpos.size()));
 
       sycl::buffer<int32_t,1> sectors_buf (sectors.data(), sycl::range<1>(sectors.size()));
       sycl::buffer<double, 1> sectorDist_buf (&sectorDist, sycl::range<1>(1));
@@ -425,12 +400,8 @@ namespace Jug::Reco {
           auto max_idx_acc = max_idx_buf.get_access<sycl::access::mode::write>(h);
           auto minClusterCenterEdep_acc = minClusterCenterEdep_buf.get_access<sycl::access::mode::read>(h);
 
-          auto lx_acc = lx_buf.get_access<sycl::access::mode::read>(h);
-          auto ly_acc = ly_buf.get_access<sycl::access::mode::read>(h);
-          auto lz_acc = lz_buf.get_access<sycl::access::mode::read>(h);
-          auto gx_acc = gx_buf.get_access<sycl::access::mode::read>(h);
-          auto gy_acc = gy_buf.get_access<sycl::access::mode::read>(h);
-          auto gz_acc = gz_buf.get_access<sycl::access::mode::read>(h);
+          auto lpos_acc = lpos_buf.get_access<sycl::access::mode::read>(h);
+          auto gpos_acc = gpos_buf.get_access<sycl::access::mode::read>(h);
 
           auto sectors_acc = sectors_buf.get_access<sycl::access::mode::read>(h);
           auto sectorDist_acc = sectorDist_buf.get_access<sycl::access::mode::read>(h);
@@ -450,8 +421,7 @@ namespace Jug::Reco {
               }
 
               if(energy_acc[i] > energy_acc[idx]){
-                if(Jug::Reco::is_neighbour(lx_acc,ly_acc,lz_acc,gx_acc,gy_acc,gz_acc,
-                                                sectors_acc,sectorDist_acc,neighbourDist_acc,idx, i)){
+                if(Jug::Reco::is_neighbour(lpos_acc,gpos_acc,sectors_acc,sectorDist_acc,neighbourDist_acc,idx,i)){
                       is_max = false;
                       break;
                   }
@@ -475,7 +445,7 @@ namespace Jug::Reco {
     // Convert maxima index array to hit vector for further processing
     for(size_t i = 0; i < max_idx.size(); i++){
       if(max_idx[i] == 1){
-        //std::cout << "Found maxima at: " << i << "\n";
+        std::cout << "Found Maxima at: " << group[i].first << "\n";
         maxima.push_back(group[i].second);
       }
     }
@@ -501,7 +471,7 @@ namespace Jug::Reco {
       }
 
       if (maximum) {
-        std::cout << "Found maxima at: " << idx << "\n";
+        std::cout << "Found Maxima at: " << idx << "\n";
         maxima.push_back(hit);
       }
     }
