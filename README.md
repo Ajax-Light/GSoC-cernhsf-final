@@ -14,15 +14,18 @@ Based on the profile, the algorithm is rewritten in SYCL and changes are pushed 
 
 ## Directory Structure
 
-1. Source code:
+1. Source code (src):
 
     * `CalClustering.cpp` contains the Main function
     * `CalorimeterIslandCluster.cpp` is the Island Cluster Algorithm which has been separated into functionals
     * `AlgoHeaders.h` contains Class definitions for the algorithms, Gaudi's Units and Properties struct
 
-2. Misc files:
+    a. Misc Files:
 
-    * `control_output` is the unmodified algorithm output which acts as a reference to ensure SYCL code produces correct output
+        * `Makefile` has a target `cc` which invokes the clustering algorithm. Build using `make cc`
+        * `notes.txt` contains notes regarding the build process and issues encountered during setting up the build system. Refer this when program execution fails.
 
-    * `Makefile` has a target `cc` which invokes the clustering algorithm. Build using `make cc`
-    * `notes.txt` contains notes regarding the build process and issues encountered during setting up the build system. Refer this when program execution fails.
+2. Reports:
+
+    * [Wall Time comparision with and without SYCL](./reports/WallTime-compare.png)
+    * [Screenshots of VTune Profiler Results](./reports/perf_cmpr.pdf)

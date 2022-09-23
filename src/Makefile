@@ -14,7 +14,7 @@ cc: CalClustering.cpp CalorimeterIslandCluster.cpp
 	-lfmt
 
 clean:
-	rm -rf dump_events cc test_clusterop.root
+	rm -rf dump_events cc
 
 dump_events.cpp:
 CalClustering.cpp:
