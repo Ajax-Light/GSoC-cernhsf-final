@@ -16,14 +16,16 @@ Based on the profile, the algorithm is rewritten in SYCL and changes are pushed 
 
 1. Source code (src):
 
-    * `CalClustering.cpp` contains the Main function
-    * `CalorimeterIslandCluster.cpp` is the Island Cluster Algorithm which has been separated into functionals
-    * `AlgoHeaders.h` contains Class definitions for the algorithms, Gaudi's Units and Properties struct
+    a. `CalClustering.cpp` contains the Main function
 
-    a. Misc Files:
+    b. `CalorimeterIslandCluster.cpp` is the Island Cluster Algorithm which has been separated into functionals
 
-        * `Makefile` has a target `cc` which invokes the clustering algorithm. Build using `make cc`
-        * `notes.txt` contains notes regarding the build process and issues encountered during setting up the build system. Refer this when program execution fails.
+    c. `AlgoHeaders.h` contains Class definitions for the algorithms, Gaudi's Units and Properties struct
+
+      i. Misc Files:
+
+      * `Makefile` has a target `cc` which invokes the clustering algorithm. Build using `make cc`
+      * `notes.txt` contains notes regarding the build process and issues encountered during setting up the build system. Refer this when program execution fails.
 
 2. Reports:
 
