@@ -1,0 +1,4 @@
+1)  Set LIBRARY_PATH=/work/juggler/build:/work/Gaudi/build to set library location instead
+    of -L while compiling
+
+2)  Set LD_LIBRARY_PATH=Juggler Alg lib, and add this alg to job file AppMgr.DLLs

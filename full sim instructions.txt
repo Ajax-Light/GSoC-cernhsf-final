@@ -1,0 +1,31 @@
+1) # Generate the input events
+python3 benchmarks/imaging_ecal/scripts/gen_particles.py /wd/profile_run_100k.hepmc -n 100000\
+    --angmin 5 --angmax 175 --phmin 0 --phmax 360 --pmin 1.0 --pmax 10.0\
+    --particles="electron"
+
+2) 
+source /opt/detector/setup.sh
+export PATH=/usr/local/bin:$PATH
+
+3) # Run geant4 simulations
+
+100k
+nohup ddsim --runType batch \
+      -v DEBUG \
+      --part.minimalKineticEnergy "1*TeV" \
+      --filter.tracker edep0 \
+      --numberOfEvents 100000 \
+      --compactFile ${DETECTOR_PATH}/${JUGGLER_DETECTOR_CONFIG}.xml \
+      --inputFiles /wd/profile_run_100k.hepmc \
+      --outputFile /wd/sim_profile_100k.edm4hep.root &
+
+1m
+nohup ddsim --runType batch \
+      -v DEBUG \
+      --part.minimalKineticEnergy "1*TeV" \
+      --filter.tracker edep0 \
+      --numberOfEvents 1000000 \
+      --compactFile ${DETECTOR_PATH}/${JUGGLER_DETECTOR_CONFIG}.xml \
+      --inputFiles /wd/1m.hepmc \
+      --outputFile /wd/sim_profile_1m.edm4hep.root &> nohup_1m.out &
+

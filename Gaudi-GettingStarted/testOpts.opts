@@ -1,0 +1,22 @@
+// Include standard option files
+// #include "$STDOPTS/Common.opts"
+
+// Private Application Configuration options
+ApplicationMgr.DLLs += { "GaudiDb", "GaudiRootDb" };
+ApplicationMgr.ExtSvc += { "DbEventCnvSvc/RootEvtCnvSvc" };
+ApplicationMgr.TopAlg = { "ReadAlg" };
+
+// Set output level threshold (2=DEBUG,3=INFO,4=WARNING,5=ERROR,6=FATAL)
+MessageSvc.OutputLevel = 4;
+EventSelector.OutputLevel = 2;
+
+// Input File
+EventSelector.Input = {"DATAFILE='RootDst.root' TYP='ROOT' OPT='READ'"};
+EventSelector.FirstEvent = 1;
+ApplicationMgr.EvtMax = 5;
+
+// Persistency service setup:
+EventPersistencySvc.CnvServices += { "RootEvtCnvSvc" };
+
+// Setup for ROOT I/O system
+RootEvtCnvSvc.DbType = "ROOT";

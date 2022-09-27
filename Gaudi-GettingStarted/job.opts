@@ -1,0 +1,29 @@
+// Include standard option files
+// #include "$STDOPTS/Common.opts"
+
+// Private Application Configuration options
+ApplicationMgr.DLLs += { "GaudiDb", "GaudiRootDb", "GaudiAlg" ,"JugRecoPlugins" };
+//ApplicationMgr.ExtSvc += { "RootEvtCnvSvc" };
+ApplicationMgr.TopAlg = { "JugRecoPlugins/CalorimeterIslandCluster" };
+
+// Set output level threshold (2=DEBUG,3=INFO,4=WARNING,5=ERROR,6=FATAL)
+MessageSvc.OutputLevel = 2;
+EventSelector.OutputLevel = 2;
+PluginDebugLevel = 1;
+
+// Input File
+EventSelector.Input = {"DATAFILE='rec_profile_DigiReco_1k.root' TYP='ROOT' OPT='READ'"};
+ApplicationMgr.EvtMax = 1000; // events to be processed (default is 10)
+ApplicationMgr.EvtSel = "NONE"; // do not use any event input
+
+// Output File
+ApplicationMgr.OutStream = { "DstWriter" };
+DstWriter.ItemList = { "*"};
+DstWriter.EvtDataSvc = "EventDataSvc";
+DstWriter.Output = {"DATAFILE='rec_profile_Cluster_1k.root' TYP='ROOT' OPT='WRITE'"};
+
+// Persistency service setup:
+EventPersistencySvc.CnvServices += { "RootEvtCnvSvc" };
+
+// Setup for ROOT I/O system
+RootEvtCnvSvc.DbType = "ROOT";
